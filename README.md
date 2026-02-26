@@ -115,6 +115,31 @@ curl -X POST http://localhost:8100/request/abc123/confirm \
 - **Plugins:** Standalone HTTP servers (any language, TS reference implementations)
 - **Web UI:** Served by core, password-protected
 
+## Roadmap
+
+**Now (MVP)**
+- Bastion Core with OTP approval flow
+- GitHub plugin (create_repo)
+- Web UI for review and approval
+
+**Next**
+- More GitHub actions (branch protection, collaborators, PRs, issues)
+- AWS plugin (EC2, S3, IAM operations)
+- Configurable auto-approve policies (user chooses what needs manual approval vs. auto)
+- OpenClaw plugin (native tool integration, no curl needed)
+- Notification channels (push notifications, email, chat webhooks)
+
+**Later**
+- Community plugin ecosystem
+- Batch operations (approve/reject groups of related requests)
+- Dual approval for high-risk actions
+- Plugin marketplace / registry
+- Docker/Kubernetes plugin
+- DNS management plugin (Route53, Cloudflare)
+- Database migration plugin
+
+**Philosophy:** Bastion core stays small. New capabilities come from plugins, not core bloat.
+
 ## License
 
-MIT
+MIT — © Joshua Ohana
