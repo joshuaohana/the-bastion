@@ -144,6 +144,32 @@ This polls for new requests and lets you approve/reject inline as they come in. 
 
 ---
 
+## When to Use Bastion (and When Not To)
+
+Bastion isn't meant to replace your agent's existing tools. It's meant to **gate the dangerous ones.**
+
+Most AI agents already have service credentials for their day-to-day work — a GitHub token for pushing code, an API key for fetching data, a database connection for reads. That's fine. Those are the operations your agent needs to do its job, and adding an approval step to every git push would make the agent useless.
+
+Bastion is for the *other* operations — the ones where a mistake (or a compromised agent) could cause real damage:
+
+| Let your agent do directly | Route through Bastion |
+|---|---|
+| Push branches, open PRs | Create/delete repositories |
+| Read issues and comments | Modify repo settings, branch protection |
+| Fetch data from APIs | Create/revoke API keys or credentials |
+| Query databases | Drop tables, modify schemas |
+| Read cloud resources | Provision/terminate infrastructure |
+
+**The pattern:** Create a *second* set of credentials with elevated permissions. Give those credentials to Bastion, not to your agent. Your agent keeps its normal access for everyday work and requests Bastion when it needs to do something privileged.
+
+This way:
+- Your agent stays productive — no friction on routine operations
+- Privileged operations get human review — the agent requests, you approve
+- The agent never sees the elevated credentials — even if compromised, it can only *ask*
+- You get a full audit trail of every privileged action
+
+Think of it like `sudo` for AI agents. You don't run everything as root. You elevate when needed, with explicit approval.
+
 ## How It Works
 
 ```
