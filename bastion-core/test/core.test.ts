@@ -1,21 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import bcrypt from 'bcryptjs';
 import { buildApp, startExpirationLoop } from '../src/app';
 import { BastionDb } from '../src/db';
 import { PluginRegistry } from '../src/plugin-registry';
 
-function mkConfig(passwordHash: string) {
+function mkConfig() {
   return {
     host: '127.0.0.1',
     port: 8100,
     dbPath: ':memory:',
-    passwordHash,
+    password: 'secret',
     agentApiKey: 'agent-key',
     pluginUrls: { github: 'http://plugin' },
-    defaultTtl: 2,
-    sessionSecret: 'test-session-secret',
-    sessionTtlSeconds: 3600
+    defaultTtl: 2
   };
 }
 
@@ -28,8 +25,7 @@ describe('bastion core', () => {
     db = new BastionDb(':memory:');
     registry = new PluginRegistry({ github: 'http://plugin' });
     registry.manifests.set('github', { name: 'github', version: '0.1', actions: { create_repo: { description: '', risk: 'write', params_schema: {} } } });
-    const passwordHash = await bcrypt.hash('secret', 4);
-    app = buildApp(mkConfig(passwordHash), db, registry);
+    app = buildApp(mkConfig(), db, registry);
 
     vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
       if (input.endsWith('/validate')) return new Response(JSON.stringify({ valid: true }));
@@ -39,22 +35,19 @@ describe('bastion core', () => {
     }) as unknown as typeof fetch);
   });
 
-  async function loginCookie(): Promise<string> {
-    const login = await request(app).post('/api/login').send({ password: 'secret' });
-    expect(login.status).toBe(200);
-    const cookie = login.headers['set-cookie']?.[0];
-    expect(cookie).toBeDefined();
-    return cookie as string;
+  function adminAuth() {
+    return 'Bearer secret';
   }
 
-  it('login with wrong password returns 401', async () => {
-    const login = await request(app).post('/api/login').send({ password: 'wrong' });
-    expect(login.status).toBe(401);
-  });
-
-  it('unauthenticated /api calls return 401', async () => {
+  it('admin endpoints require bearer password', async () => {
     const pending = await request(app).get('/api/requests/pending');
     expect(pending.status).toBe(401);
+
+    const wrong = await request(app).get('/api/requests/pending').set('Authorization', 'Bearer wrong');
+    expect(wrong.status).toBe(401);
+
+    const ok = await request(app).get('/api/requests/pending').set('Authorization', adminAuth());
+    expect(ok.status).toBe(200);
   });
 
   it('agent endpoints without api key return 401', async () => {
@@ -80,7 +73,7 @@ describe('bastion core', () => {
     expect(submit.status).toBe(200);
     const id = submit.body.request_id;
 
-    const approve = await request(app).post(`/api/request/${id}/approve`).set('Cookie', await loginCookie());
+    const approve = await request(app).post(`/api/requests/${id}/approve`).set('Authorization', adminAuth());
     expect(approve.status).toBe(200);
     const otp = approve.body.otp;
 
@@ -98,7 +91,7 @@ describe('bastion core', () => {
       .set('Authorization', 'Bearer agent-key')
       .send({ plugin: 'github', action: 'create_repo', params: { name: 'repo' } });
     const id = submit.body.request_id;
-    await request(app).post(`/api/request/${id}/approve`).set('Cookie', await loginCookie());
+    await request(app).post(`/api/requests/${id}/approve`).set('Authorization', adminAuth());
 
     for (let i = 0; i < 3; i += 1) {
       const wrong = await request(app)
@@ -122,8 +115,8 @@ describe('bastion core', () => {
     const id = submit.body.request_id;
 
     const reject = await request(app)
-      .post(`/api/request/${id}/reject`)
-      .set('Cookie', await loginCookie())
+      .post(`/api/requests/${id}/reject`)
+      .set('Authorization', adminAuth())
       .send({ reason: 'nope' });
 
     expect(reject.status).toBe(200);
@@ -138,7 +131,7 @@ describe('bastion core', () => {
       .send({ plugin: 'github', action: 'create_repo', params: { name: 'repo' } });
     const id = submit.body.request_id;
 
-    const approve = await request(app).post(`/api/request/${id}/approve`).set('Cookie', await loginCookie());
+    const approve = await request(app).post(`/api/requests/${id}/approve`).set('Authorization', adminAuth());
     const otp = approve.body.otp;
 
     db.updateFields(id, { decided_at: Date.now() - 10_000, ttl_seconds: 1 });
@@ -157,13 +150,29 @@ describe('bastion core', () => {
       .send({ plugin: 'github', action: 'create_repo', params: { name: 'repo' } });
     const id = submit.body.request_id;
 
-    await request(app).post(`/api/request/${id}/approve`).set('Cookie', await loginCookie());
+    await request(app).post(`/api/requests/${id}/approve`).set('Authorization', adminAuth());
 
     const detail = await request(app)
       .get(`/request/${id}`)
       .set('Authorization', 'Bearer agent-key');
 
     expect(detail.status).toBe(200);
+    expect(detail.body.otp_hash).toBeUndefined();
+  });
+
+  it('admin can fetch request details', async () => {
+    const submit = await request(app)
+      .post('/request')
+      .set('Authorization', 'Bearer agent-key')
+      .send({ plugin: 'github', action: 'create_repo', params: { name: 'repo' } });
+    const id = submit.body.request_id;
+
+    const detail = await request(app)
+      .get(`/api/requests/${id}`)
+      .set('Authorization', adminAuth());
+
+    expect(detail.status).toBe(200);
+    expect(detail.body.id).toBe(id);
     expect(detail.body.otp_hash).toBeUndefined();
   });
 

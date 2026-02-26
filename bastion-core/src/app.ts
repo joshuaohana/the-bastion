@@ -1,7 +1,4 @@
-import crypto from 'node:crypto';
 import express from 'express';
-import cookieParser from 'cookie-parser';
-import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { BastionConfig, BastionRequest } from './types';
 import { BastionDb } from './db';
@@ -11,74 +8,29 @@ import { checkOtp, generateOtp, hashOtp } from './otp';
 function now(): number { return Date.now(); }
 function log(msg: string): void { console.log(`[${new Date().toISOString()}] ${msg}`); }
 
-function signSession(payload: string, secret: string): string {
-  return crypto.createHmac('sha256', secret).update(payload).digest('hex');
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const aBuffer = Buffer.from(a);
-  const bBuffer = Buffer.from(b);
-  if (aBuffer.length !== bBuffer.length) return false;
-  return crypto.timingSafeEqual(aBuffer, bBuffer);
-}
-
-function createSessionCookie(secret: string, ttlSeconds: number): string {
-  const expiresAt = now() + ttlSeconds * 1000;
-  const payload = String(expiresAt);
-  const signature = signSession(payload, secret);
-  return `${payload}.${signature}`;
-}
-
-function isValidSession(cookieValue: string | undefined, secret: string): boolean {
-  if (!cookieValue) return false;
-  const parts = cookieValue.split('.');
-  if (parts.length !== 2) return false;
-  const [payload, signature] = parts;
-  const expectedSignature = signSession(payload, secret);
-  if (!safeEqual(signature, expectedSignature)) return false;
-  const expiresAt = Number(payload);
-  if (!Number.isFinite(expiresAt)) return false;
-  return now() <= expiresAt;
-}
-
 function sanitizeRequest(request: BastionRequest): Omit<BastionRequest, 'otp_hash'> {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { otp_hash, ...safe } = request;
   return safe;
 }
 
+function hasBearerToken(req: express.Request, expectedToken: string): boolean {
+  return req.get('authorization') === `Bearer ${expectedToken}`;
+}
+
 export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginRegistry): express.Express {
   const app = express();
   app.use(express.json());
-  app.use(cookieParser());
-  app.use(express.static('public'));
 
-  const requireAuth: express.RequestHandler = (req, res, next) => {
-    if (!req.path.startsWith('/api')) return next();
-    if (!isValidSession(req.cookies?.bastion_session, config.sessionSecret)) return res.status(401).json({ error: 'unauthorized' });
+  const requireAdminPassword: express.RequestHandler = (req, res, next) => {
+    if (!hasBearerToken(req, config.password)) return res.status(401).json({ error: 'unauthorized' });
     return next();
   };
 
   const requireAgentApiKey: express.RequestHandler = (req, res, next) => {
-    const authHeader = req.get('authorization');
-    if (!authHeader || authHeader !== `Bearer ${config.agentApiKey}`) return res.status(401).json({ error: 'unauthorized' });
+    if (!hasBearerToken(req, config.agentApiKey)) return res.status(401).json({ error: 'unauthorized' });
     return next();
   };
-
-  app.post('/api/login', async (req, res) => {
-    const { password } = req.body as { password?: string };
-    if (!password) return res.status(400).json({ error: 'password required' });
-    const valid = await bcrypt.compare(password, config.passwordHash);
-    if (!valid) return res.status(401).json({ error: 'invalid credentials' });
-    res.cookie('bastion_session', createSessionCookie(config.sessionSecret, config.sessionTtlSeconds), {
-      httpOnly: true,
-      sameSite: 'strict',
-      maxAge: config.sessionTtlSeconds * 1000
-    });
-    return res.json({ ok: true });
-  });
-
-  app.use(requireAuth);
 
   app.post('/request', requireAgentApiKey, async (req, res) => {
     const { plugin, action, params } = req.body as { plugin?: string; action?: string; params?: unknown };
@@ -111,7 +63,7 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     return res.json({ request_id: id, status: 'pending' });
   });
 
-  app.post('/api/request/:id/approve', async (req, res) => {
+  app.post('/api/requests/:id/approve', requireAdminPassword, async (req, res) => {
     const request = db.getRequest(req.params.id);
     if (!request) return res.status(404).json({ error: 'not found' });
     if (request.status !== 'PENDING') return res.status(409).json({ error: 'invalid state' });
@@ -122,7 +74,7 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     return res.json({ otp });
   });
 
-  app.post('/api/request/:id/reject', (req, res) => {
+  app.post('/api/requests/:id/reject', requireAdminPassword, (req, res) => {
     const request = db.getRequest(req.params.id);
     if (!request) return res.status(404).json({ error: 'not found' });
     if (!db.updateStatus(request.id, 'PENDING', 'REJECTED')) return res.status(409).json({ error: 'invalid state' });
@@ -190,9 +142,15 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     return res.json(sanitizeRequest(request));
   });
 
-  app.get('/api/requests/pending', (_req, res) => res.json(db.pending().map(sanitizeRequest)));
+  app.get('/api/requests/pending', requireAdminPassword, (_req, res) => res.json(db.pending().map(sanitizeRequest)));
 
-  app.get('/api/audit', (req, res) => {
+  app.get('/api/requests/:id', requireAdminPassword, (req, res) => {
+    const request = db.getRequest(req.params.id);
+    if (!request) return res.status(404).json({ error: 'not found' });
+    return res.json(sanitizeRequest(request));
+  });
+
+  app.get('/api/audit', requireAdminPassword, (req, res) => {
     const q = String(req.query.q ?? '');
     res.json(db.searchAudit(q));
   });

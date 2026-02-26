@@ -12,12 +12,10 @@ export interface BastionConfig {
   host: string;
   port: number;
   dbPath: string;
-  passwordHash: string;
+  password: string;
   agentApiKey: string;
   pluginUrls: Record<string, string>;
   defaultTtl: number;
-  sessionSecret: string;
-  sessionTtlSeconds: number;
 }
 
 export interface BastionRequest {
