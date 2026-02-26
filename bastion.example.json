@@ -3,6 +3,9 @@
   "port": 8100,
   "dbPath": "./bastion.db",
   "passwordHash": "$2b$10$replace_with_bcrypt_hash",
+  "agentApiKey": "replace_with_agent_api_key",
+  "sessionSecret": "replace_with_random_session_secret",
+  "sessionTtlSeconds": 3600,
   "pluginUrls": {
     "github": "http://127.0.0.1:8101"
   },

@@ -23,7 +23,7 @@ The Bastion has two main components:
 
 ## Bastion Core
 
-**Tech:** Python, FastAPI, SQLite
+**Tech:** TypeScript, Express, better-sqlite3
 
 ### Responsibilities
 

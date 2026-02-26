@@ -1,14 +1,51 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
-import { BastionConfig } from './types';
+import { BastionConfig, BastionRequest } from './types';
 import { BastionDb } from './db';
 import { PluginRegistry } from './plugin-registry';
 import { checkOtp, generateOtp, hashOtp } from './otp';
 
 function now(): number { return Date.now(); }
 function log(msg: string): void { console.log(`[${new Date().toISOString()}] ${msg}`); }
+
+function signSession(payload: string, secret: string): string {
+  return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  if (aBuffer.length !== bBuffer.length) return false;
+  return crypto.timingSafeEqual(aBuffer, bBuffer);
+}
+
+function createSessionCookie(secret: string, ttlSeconds: number): string {
+  const expiresAt = now() + ttlSeconds * 1000;
+  const payload = String(expiresAt);
+  const signature = signSession(payload, secret);
+  return `${payload}.${signature}`;
+}
+
+function isValidSession(cookieValue: string | undefined, secret: string): boolean {
+  if (!cookieValue) return false;
+  const parts = cookieValue.split('.');
+  if (parts.length !== 2) return false;
+  const [payload, signature] = parts;
+  const expectedSignature = signSession(payload, secret);
+  if (!safeEqual(signature, expectedSignature)) return false;
+  const expiresAt = Number(payload);
+  if (!Number.isFinite(expiresAt)) return false;
+  return now() <= expiresAt;
+}
+
+function sanitizeRequest(request: BastionRequest): Omit<BastionRequest, 'otp_hash'> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { otp_hash, ...safe } = request;
+  return safe;
+}
 
 export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginRegistry): express.Express {
   const app = express();
@@ -17,8 +54,15 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
   app.use(express.static('public'));
 
   const requireAuth: express.RequestHandler = (req, res, next) => {
-    if (req.path.startsWith('/api') && req.cookies?.bastion_session !== 'ok') return res.status(401).json({ error: 'unauthorized' });
-    next();
+    if (!req.path.startsWith('/api')) return next();
+    if (!isValidSession(req.cookies?.bastion_session, config.sessionSecret)) return res.status(401).json({ error: 'unauthorized' });
+    return next();
+  };
+
+  const requireAgentApiKey: express.RequestHandler = (req, res, next) => {
+    const authHeader = req.get('authorization');
+    if (!authHeader || authHeader !== `Bearer ${config.agentApiKey}`) return res.status(401).json({ error: 'unauthorized' });
+    return next();
   };
 
   app.post('/api/login', async (req, res) => {
@@ -26,13 +70,17 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     if (!password) return res.status(400).json({ error: 'password required' });
     const valid = await bcrypt.compare(password, config.passwordHash);
     if (!valid) return res.status(401).json({ error: 'invalid credentials' });
-    res.cookie('bastion_session', 'ok', { httpOnly: true, sameSite: 'strict' });
+    res.cookie('bastion_session', createSessionCookie(config.sessionSecret, config.sessionTtlSeconds), {
+      httpOnly: true,
+      sameSite: 'strict',
+      maxAge: config.sessionTtlSeconds * 1000
+    });
     return res.json({ ok: true });
   });
 
   app.use(requireAuth);
 
-  app.post('/request', async (req, res) => {
+  app.post('/request', requireAgentApiKey, async (req, res) => {
     const { plugin, action, params } = req.body as { plugin?: string; action?: string; params?: unknown };
     if (!plugin || !action || params === undefined) return res.status(400).json({ error: 'plugin/action/params required' });
     if (!registry.hasAction(plugin, action)) return res.status(400).json({ error: 'unknown plugin action' });
@@ -83,15 +131,15 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     return res.json({ status: 'rejected' });
   });
 
-  app.post('/request/:id/confirm', async (req, res) => {
+  app.post('/request/:id/confirm', requireAgentApiKey, async (req, res) => {
     const { otp } = req.body as { otp?: string };
     if (!otp) return res.status(400).json({ error: 'otp required' });
     const request = db.getRequest(req.params.id);
     if (!request) return res.status(404).json({ error: 'not found' });
-    if (request.status !== 'APPROVED' || !request.otp_hash) return res.status(409).json({ error: 'invalid state' });
+    if (request.status !== 'APPROVED' || !request.otp_hash || !request.decided_at) return res.status(409).json({ error: 'invalid state' });
     if (request.otp_attempts >= 3) return res.status(403).json({ error: 'max attempts exceeded' });
-    if (now() > request.created_at + (request.ttl_seconds * 1000)) {
-      db.updateFields(request.id, { status: 'EXPIRED' });
+    if (now() > request.decided_at + (request.ttl_seconds * 1000)) {
+      db.updateStatus(request.id, 'APPROVED', 'EXPIRED');
       db.audit(request.id, 'REQUEST_EXPIRED', {});
       return res.status(410).json({ error: 'expired' });
     }
@@ -109,32 +157,40 @@ export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginR
     if (!db.updateStatus(request.id, 'CONFIRMED', 'EXECUTING')) return res.status(409).json({ error: 'invalid state' });
 
     const base = registry.getUrl(request.plugin)!;
-    const executeRes = await fetch(`${base}/execute`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: request.action, params: JSON.parse(request.params) })
-    });
-    const executeJson = await executeRes.json() as { success: boolean; result?: unknown; error?: string };
+    try {
+      const executeRes = await fetch(`${base}/execute`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: request.action, params: JSON.parse(request.params) })
+      });
+      const executeJson = await executeRes.json() as { success: boolean; result?: unknown; error?: string };
 
-    if (executeJson.success) {
-      if (!db.updateStatus(request.id, 'EXECUTING', 'COMPLETED')) return res.status(409).json({ error: 'invalid state' });
-      db.updateFields(request.id, { result: JSON.stringify(executeJson.result), executed_at: now() });
-      db.audit(request.id, 'REQUEST_COMPLETED', executeJson.result ?? {});
-      return res.json({ status: 'completed', result: executeJson.result });
+      if (executeJson.success) {
+        if (!db.updateStatus(request.id, 'EXECUTING', 'COMPLETED')) return res.status(409).json({ error: 'invalid state' });
+        db.updateFields(request.id, { result: JSON.stringify(executeJson.result), executed_at: now() });
+        db.audit(request.id, 'REQUEST_COMPLETED', executeJson.result ?? {});
+        return res.json({ status: 'completed', result: executeJson.result });
+      }
+
+      if (!db.updateStatus(request.id, 'EXECUTING', 'ERROR')) return res.status(409).json({ error: 'invalid state' });
+      db.updateFields(request.id, { error: executeJson.error ?? 'execution failed', executed_at: now() });
+      db.audit(request.id, 'REQUEST_ERROR', { error: executeJson.error ?? 'execution failed' });
+      return res.status(500).json({ status: 'error', error: executeJson.error ?? 'execution failed' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'execution failed';
+      db.updateStatus(request.id, 'EXECUTING', 'ERROR');
+      db.updateFields(request.id, { error: message, executed_at: now() });
+      db.audit(request.id, 'REQUEST_ERROR', { error: message });
+      return res.status(500).json({ status: 'error', error: message });
     }
-
-    if (!db.updateStatus(request.id, 'EXECUTING', 'ERROR')) return res.status(409).json({ error: 'invalid state' });
-    db.updateFields(request.id, { error: executeJson.error ?? 'execution failed', executed_at: now() });
-    db.audit(request.id, 'REQUEST_ERROR', { error: executeJson.error ?? 'execution failed' });
-    return res.status(500).json({ status: 'error', error: executeJson.error ?? 'execution failed' });
   });
 
-  app.get('/request/:id', (req, res) => {
+  app.get('/request/:id', requireAgentApiKey, (req, res) => {
     const request = db.getRequest(req.params.id);
     if (!request) return res.status(404).json({ error: 'not found' });
-    return res.json(request);
+    return res.json(sanitizeRequest(request));
   });
 
-  app.get('/api/requests/pending', (_req, res) => res.json(db.pending()));
+  app.get('/api/requests/pending', (_req, res) => res.json(db.pending().map(sanitizeRequest)));
 
   app.get('/api/audit', (req, res) => {
     const q = String(req.query.q ?? '');
@@ -150,8 +206,13 @@ export function startExpirationLoop(db: BastionDb): NodeJS.Timeout {
     const current = now();
     for (const req of allPending) {
       if (current > req.created_at + req.ttl_seconds * 1000) {
-        db.updateFields(req.id, { status: 'EXPIRED' });
-        db.audit(req.id, 'REQUEST_EXPIRED', { from: req.status });
+        if (db.updateStatus(req.id, 'PENDING', 'EXPIRED')) {
+          db.audit(req.id, 'REQUEST_EXPIRED', { from: 'PENDING' });
+          continue;
+        }
+        if (db.updateStatus(req.id, 'APPROVED', 'EXPIRED')) {
+          db.audit(req.id, 'REQUEST_EXPIRED', { from: 'APPROVED' });
+        }
       }
     }
   }, 1000);
