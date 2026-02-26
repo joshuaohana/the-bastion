@@ -6,6 +6,7 @@ import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { Command } from 'commander';
 import chalk from 'chalk';
+import bcrypt from 'bcryptjs';
 
 type RequestItem = {
   id: string;
@@ -117,7 +118,13 @@ async function main(): Promise<void> {
     }
   });
 
-  program.command('watch').description('Interactive mode for approving/rejecting requests').action(async () => {
+  program.command('hash-password').argument('<password>').description('Hash a password for use in bastion.json').action(async (password: string) => {
+    const hash = await bcrypt.hash(password, 10);
+    console.log(chalk.gray('Add this to your bastion.json as "passwordHash":'));
+    console.log(chalk.green(hash));
+  });
+
+  program.command('live').description('Interactive mode — live feed of requests, approve/reject inline').action(async () => {
     const config = loadConfig();
     const seen = new Set<string>();
     const rl = readline.createInterface({ input, output });

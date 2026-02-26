@@ -12,7 +12,7 @@ export interface BastionConfig {
   host: string;
   port: number;
   dbPath: string;
-  password: string;
+  passwordHash: string;
   agentApiKey: string;
   pluginUrls: Record<string, string>;
   defaultTtl: number;

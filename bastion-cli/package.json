@@ -10,10 +10,12 @@
     "test": "node -e \"console.log('bastion-cli: no tests')\""
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "chalk": "^5.4.1",
     "commander": "^13.1.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.13.10",
     "typescript": "^5.7.3"
   }

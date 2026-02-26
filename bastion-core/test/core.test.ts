@@ -9,7 +9,7 @@ function mkConfig() {
     host: '127.0.0.1',
     port: 8100,
     dbPath: ':memory:',
-    password: 'secret',
+    passwordHash: '$2a$10$Z1XNjWTsxuodNjVjBe29dej52tZPrKOeKFtufY3c4Tvw2Lq2Vrz8K', // 'secret'
     agentApiKey: 'agent-key',
     pluginUrls: { github: 'http://plugin' },
     defaultTtl: 2

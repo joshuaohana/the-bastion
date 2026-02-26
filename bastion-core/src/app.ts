@@ -14,21 +14,27 @@ function sanitizeRequest(request: BastionRequest): Omit<BastionRequest, 'otp_has
   return safe;
 }
 
-function hasBearerToken(req: express.Request, expectedToken: string): boolean {
-  return req.get('authorization') === `Bearer ${expectedToken}`;
+import bcrypt from 'bcryptjs';
+
+function getBearerToken(req: express.Request): string | null {
+  const auth = req.get('authorization');
+  if (!auth?.startsWith('Bearer ')) return null;
+  return auth.slice(7);
 }
 
 export function buildApp(config: BastionConfig, db: BastionDb, registry: PluginRegistry): express.Express {
   const app = express();
   app.use(express.json());
 
-  const requireAdminPassword: express.RequestHandler = (req, res, next) => {
-    if (!hasBearerToken(req, config.password)) return res.status(401).json({ error: 'unauthorized' });
+  const requireAdminPassword: express.RequestHandler = async (req, res, next) => {
+    const token = getBearerToken(req);
+    if (!token || !await bcrypt.compare(token, config.passwordHash)) return res.status(401).json({ error: 'unauthorized' });
     return next();
   };
 
   const requireAgentApiKey: express.RequestHandler = (req, res, next) => {
-    if (!hasBearerToken(req, config.agentApiKey)) return res.status(401).json({ error: 'unauthorized' });
+    const token = getBearerToken(req);
+    if (!token || token !== config.agentApiKey) return res.status(401).json({ error: 'unauthorized' });
     return next();
   };
 
