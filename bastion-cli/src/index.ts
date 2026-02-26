@@ -121,9 +121,12 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const seen = new Set<string>();
     const rl = readline.createInterface({ input, output });
-    console.log(chalk.green('Watching for pending requests (polling every 2s). Press Ctrl+C to exit.'));
+    console.log(chalk.green('Watching for pending requests (polling every 2s). Press q + Enter or Ctrl+C to exit.\n'));
 
-    while (true) {
+    let running = true;
+    process.on('SIGINT', () => { running = false; rl.close(); });
+
+    while (running) {
       const pending = await api<RequestItem[]>(config, '/api/requests/pending');
       for (const req of pending) {
         if (seen.has(req.id)) continue;
@@ -131,7 +134,8 @@ async function main(): Promise<void> {
         console.log('\n' + chalk.bold('New request:'));
         printRequestSummary(req);
         console.log(req.preview.includes('\n') ? req.preview.split('\n').slice(1).join('\n') : '');
-        const answer = (await rl.question(chalk.bold('Action [a]pprove / [r]eject / [s]kip: '))).trim().toLowerCase();
+        const answer = (await rl.question(chalk.bold('Action [a]pprove / [r]eject / [s]kip / [q]uit: '))).trim().toLowerCase();
+        if (answer === 'q' || answer === 'quit') { running = false; break; }
         if (answer === 'a' || answer === 'approve') {
           const result = await api<{ otp: string }>(config, `/api/requests/${req.id}/approve`, { method: 'POST', body: '{}' });
           console.log(chalk.green(`Approved ${req.id}`));
@@ -149,6 +153,8 @@ async function main(): Promise<void> {
       }
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
+    rl.close();
+    console.log(chalk.gray('\nStopped watching.'));
   });
 
   await program.parseAsync(process.argv);
