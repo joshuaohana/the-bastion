@@ -43,18 +43,20 @@ Returns the plugin's capabilities.
 ```
 
 **Risk levels:**
-- `read` — no side effects, safe to auto-approve at trust tier 1+
+- `read` — no side effects
 - `write` — creates or modifies resources
-- `destructive` — deletes resources or changes permissions, always tier 3 (manual)
+- `destructive` — deletes resources or changes permissions
 
-**params_schema** follows JSON Schema. Bastion core uses this for:
+Risk levels are metadata for the human reviewer. In MVP, all actions require manual approval regardless of risk level. In future versions, users can configure auto-approve policies based on risk.
+
+**params_schema** follows JSON Schema. Used for:
 - Input validation before queuing
 - Rendering the approval UI (human sees exactly what will happen)
 - Documentation generation
 
 ### POST /validate
 
-Validates params before the request is queued. Allows plugin-specific validation beyond JSON Schema (e.g., "repo name can't contain spaces").
+Validates params before the request is queued. Allows plugin-specific validation beyond JSON Schema.
 
 ```
 POST /validate
@@ -64,9 +66,24 @@ Body: { "action": "create_repo", "params": { "name": "my-repo" } }
 → 200: { "valid": false, "errors": ["Repo name cannot contain spaces"] }
 ```
 
+### GET /actions/{action}/preview
+
+Returns a human-readable preview of what will happen. **Required for all actions.**
+
+```
+GET /actions/create_repo/preview?name=my-repo&private=true
+
+→ 200: {
+    "summary": "Create private repository 'my-repo' under joshuaohana",
+    "details": "This will create a new private repository at https://github.com/joshuaohana/my-repo with default settings."
+  }
+```
+
+The preview is shown to the human in the approval UI. It should be clear, specific, and honest about what will happen.
+
 ### POST /execute
 
-Executes an approved action. **Only called after human approval** (or auto-approve via trust tier).
+Executes an approved action. **Only called after human approval + OTP confirmation.**
 
 ```
 POST /execute
@@ -95,87 +112,65 @@ Simple health check.
 → 200: { "status": "ok", "name": "github", "version": "0.1.0" }
 ```
 
-## Optional Endpoints
-
-### GET /actions/{action}/preview
-
-Returns a human-readable preview of what will happen. Used in the approval UI.
-
-```
-GET /actions/create_repo/preview?name=my-repo&private=true
-
-→ 200: {
-    "summary": "Create private repository 'my-repo' under joshuaohana",
-    "details": "This will create a new private repository at https://github.com/joshuaohana/my-repo"
-  }
-```
-
 ## Building a Plugin
 
 A plugin is just an HTTP server. Here's the minimal structure:
 
 ```
 bastion-github/
-├── bastion_github/
-│   ├── __init__.py
-│   ├── server.py          # FastAPI app with the 4 required endpoints
+├── src/
+│   ├── index.ts           # Express/Hono app with required endpoints
 │   ├── actions/           # One file per action
-│   │   ├── create_repo.py
-│   │   └── list_repos.py
-│   └── config.py          # Plugin credentials and settings
-├── plugin.toml            # Plugin metadata + user-extensible action config
-├── pyproject.toml
+│   │   ├── create-repo.ts
+│   │   └── list-repos.ts
+│   └── config.ts          # Plugin credentials and settings
+├── plugin.json            # Plugin config (creds, user-defined actions)
+├── package.json
 └── README.md
 ```
 
 ### User-Extensible Actions
 
-Users can add custom actions to any plugin without modifying plugin code. In `plugin.toml`:
+Users can add custom actions to any plugin without modifying plugin code. In `plugin.json`:
 
-```toml
-[plugin]
-name = "github"
-
-[credentials]
-app_id = 12345
-private_key_path = "/path/to/key.pem"
-installation_id = 67890
-
-# Built-in actions are defined in code.
-# Users can add more here:
-
-[actions.custom.create_branch_protection]
-description = "Set branch protection rules"
-risk = "write"
-# Maps to a GitHub API call
-method = "PUT"
-endpoint = "/repos/{owner}/{repo}/branches/{branch}/protection"
-params_schema = '''
+```json
 {
-  "type": "object",
-  "properties": {
-    "owner": { "type": "string" },
-    "repo": { "type": "string" },
-    "branch": { "type": "string", "default": "main" }
+  "credentials": {
+    "appId": 12345,
+    "privateKeyPath": "/path/to/key.pem",
+    "installationId": 67890
   },
-  "required": ["owner", "repo"]
+  "customActions": {
+    "create_branch_protection": {
+      "description": "Set branch protection rules",
+      "risk": "write",
+      "method": "PUT",
+      "endpoint": "/repos/{owner}/{repo}/branches/{branch}/protection",
+      "paramsSchema": {
+        "type": "object",
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "branch": { "type": "string", "default": "main" }
+        },
+        "required": ["owner", "repo"]
+      },
+      "bodyTemplate": {
+        "required_pull_request_reviews": {
+          "required_approving_review_count": 1
+        },
+        "enforce_admins": true
+      }
+    }
+  }
 }
-'''
-# Request body template (Jinja2)
-body_template = '''
-{
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 1
-  },
-  "enforce_admins": true
-}
-'''
 ```
 
-This way, adding a new GitHub action is just config — no code, no PR.
+Adding a new GitHub action = adding config. No code, no PR.
 
 ## Transport
 
 - Default: HTTP on localhost
 - Plugins SHOULD bind to localhost only (credentials never leave the machine)
-- If remote plugins are needed, use mTLS or a tunnel
+- Bastion core is the only client — plugins should reject requests from other sources
+- For additional security, plugins can require a shared secret header from core
