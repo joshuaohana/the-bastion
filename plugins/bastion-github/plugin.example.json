@@ -1,0 +1,10 @@
+{
+  "name": "github",
+  "port": 8101,
+  "owner": "joshuaohana",
+  "credentials": {
+    "appId": "12345",
+    "installationId": "67890",
+    "privateKey": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----"
+  }
+}

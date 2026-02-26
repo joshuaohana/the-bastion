@@ -1,0 +1,13 @@
+{
+  "name": "the-bastion",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "bastion-core",
+    "plugins/bastion-github"
+  ],
+  "scripts": {
+    "build": "npm run build -w bastion-core && npm run build -w plugins/bastion-github",
+    "test": "npm run test -w bastion-core && npm run test -w plugins/bastion-github"
+  }
+}

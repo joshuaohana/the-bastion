@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 8100,
+  "dbPath": "./bastion.db",
+  "passwordHash": "$2b$10$replace_with_bcrypt_hash",
+  "pluginUrls": {
+    "github": "http://127.0.0.1:8101"
+  },
+  "defaultTtl": 300
+}
