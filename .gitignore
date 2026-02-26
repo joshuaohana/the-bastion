@@ -1,10 +1,8 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
+node_modules/
 dist/
-build/
-.venv/
 *.db
-*.sqlite
-bastion.toml
-.env
+*.db-*
+bastion.json
+plugin.json
+coverage/
+.DS_Store

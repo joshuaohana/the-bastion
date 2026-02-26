@@ -43,20 +43,18 @@ Returns the plugin's capabilities.
 ```
 
 **Risk levels:**
-- `read` — no side effects
+- `read` — no side effects, safe to auto-approve at trust tier 1+
 - `write` — creates or modifies resources
-- `destructive` — deletes resources or changes permissions
+- `destructive` — deletes resources or changes permissions, always tier 3 (manual)
 
-Risk levels are metadata for the human reviewer. In MVP, all actions require manual approval regardless of risk level. In future versions, users can configure auto-approve policies based on risk.
-
-**params_schema** follows JSON Schema. Used for:
+**params_schema** follows JSON Schema. Bastion core uses this for:
 - Input validation before queuing
 - Rendering the approval UI (human sees exactly what will happen)
 - Documentation generation
 
 ### POST /validate
 
-Validates params before the request is queued. Allows plugin-specific validation beyond JSON Schema.
+Validates params before the request is queued. Allows plugin-specific validation beyond JSON Schema (e.g., "repo name can't contain spaces").
 
 ```
 POST /validate
@@ -66,24 +64,9 @@ Body: { "action": "create_repo", "params": { "name": "my-repo" } }
 → 200: { "valid": false, "errors": ["Repo name cannot contain spaces"] }
 ```
 
-### GET /actions/{action}/preview
-
-Returns a human-readable preview of what will happen. **Required for all actions.**
-
-```
-GET /actions/create_repo/preview?name=my-repo&private=true
-
-→ 200: {
-    "summary": "Create private repository 'my-repo' under joshuaohana",
-    "details": "This will create a new private repository at https://github.com/joshuaohana/my-repo with default settings."
-  }
-```
-
-The preview is shown to the human in the approval UI. It should be clear, specific, and honest about what will happen.
-
 ### POST /execute
 
-Executes an approved action. **Only called after human approval + OTP confirmation.**
+Executes an approved action. **Only called after human approval** (or auto-approve via trust tier).
 
 ```
 POST /execute
@@ -119,7 +102,7 @@ A plugin is just an HTTP server. Here's the minimal structure:
 ```
 bastion-github/
 ├── src/
-│   ├── index.ts           # Express/Hono app with required endpoints
+│   ├── index.ts           # Express app with the required endpoints
 │   ├── actions/           # One file per action
 │   │   ├── create-repo.ts
 │   │   └── list-repos.ts
@@ -166,11 +149,10 @@ Users can add custom actions to any plugin without modifying plugin code. In `pl
 }
 ```
 
-Adding a new GitHub action = adding config. No code, no PR.
+This way, adding a new GitHub action is just config — no code, no PR.
 
 ## Transport
 
 - Default: HTTP on localhost
 - Plugins SHOULD bind to localhost only (credentials never leave the machine)
-- Bastion core is the only client — plugins should reject requests from other sources
-- For additional security, plugins can require a shared secret header from core
+- If remote plugins are needed, use mTLS or a tunnel

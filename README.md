@@ -2,143 +2,236 @@
 
 A self-hosted, plugin-based approval gateway for AI agents.
 
-Your agent proposes actions. You review and approve. The Bastion executes with its own credentials. **The LLM never holds service credentials** — it can only request, never act.
+Your agent proposes actions. You review and approve via CLI. The Bastion executes with its own credentials. **The LLM never holds service credentials** — it can only request, never act.
+
+## Quick Start
+
+### 1. Clone and install
+
+```bash
+git clone https://github.com/joshuaohana/the-bastion.git
+cd the-bastion
+npm install
+npm run build
+```
+
+### 2. Configure Bastion Core
+
+```bash
+cp bastion.example.json bastion.json
+```
+
+Generate a hashed admin password and an agent API key:
+
+```bash
+# Hash your admin password
+npx bastion-cli hash-password my-secret-password
+# → $2a$10$... (copy this)
+
+# Generate a random agent API key
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# → a1b2c3... (copy this)
+```
+
+Edit `bastion.json`:
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 8100,
+  "dbPath": "./bastion.db",
+  "passwordHash": "$2a$10$...paste-your-hash-here...",
+  "agentApiKey": "a1b2c3...paste-your-key-here...",
+  "pluginUrls": {
+    "github": "http://127.0.0.1:8101"
+  },
+  "defaultTtl": 300
+}
+```
+
+### 3. Configure the GitHub Plugin
+
+```bash
+cp plugins/bastion-github/plugin.example.json plugins/bastion-github/plugin.json
+```
+
+Edit `plugins/bastion-github/plugin.json` with your GitHub App credentials:
+
+```json
+{
+  "appId": 12345,
+  "privateKeyPath": "/path/to/your-github-app.pem",
+  "installationId": 67890,
+  "defaultOwner": "your-github-username"
+}
+```
+
+(Don't have a GitHub App yet? [Create one here](https://github.com/settings/apps/new) with repo permissions.)
+
+### 4. Set up the CLI
+
+Create `~/.bastion/config.json`:
+
+```json
+{
+  "url": "http://127.0.0.1:8100",
+  "password": "my-secret-password"
+}
+```
+
+(This is the **plaintext** password — it gets sent to Bastion over localhost, where Bastion bcrypt-compares it against the hash in `bastion.json`.)
+
+### 5. Start it up
+
+```bash
+# Terminal 1: start the GitHub plugin
+npm run dev -w plugins/bastion-github
+
+# Terminal 2: start Bastion core
+npm run dev -w bastion-core
+```
+
+### 6. Try it out
+
+In a third terminal, simulate what an agent would do:
+
+```bash
+# Submit a request (as the agent)
+curl -X POST http://localhost:8100/request \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer a1b2c3...your-agent-key..." \
+  -d '{"plugin":"github","action":"create_repo","params":{"name":"test-repo","private":true}}'
+
+# → {"request_id":"abc-123-...","status":"pending"}
+```
+
+Now approve it with the CLI:
+
+```bash
+# See pending requests
+bastion pending
+
+# Approve it — prints an OTP
+bastion approve abc-123-...
+
+# ╔════════════════════════╗
+# ║       OTP: A7X9K2      ║
+# ╚════════════════════════╝
+```
+
+Confirm with the OTP (as the agent):
+
+```bash
+curl -X POST http://localhost:8100/request/abc-123-.../confirm \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer a1b2c3...your-agent-key..." \
+  -d '{"otp":"A7X9K2"}'
+
+# → {"status":"completed","result":{"url":"https://github.com/..."}}
+```
+
+That's it. The repo is created. 🎉
+
+### 7. Interactive mode
+
+Instead of checking manually, run:
+
+```bash
+bastion live
+```
+
+This polls for new requests and lets you approve/reject inline as they come in. Press `q` to quit.
+
+---
 
 ## How It Works
 
 ```
-Agent                    Bastion                   Human                    Plugin
-  │                        │                        │                        │
-  │─POST /request─────────▶│                        │                        │
-  │                        │──show in web UI────────▶│                        │
-  │                        │                        │──review + approve──────▶│
-  │                        │                        │◀──OTP generated─────────│
-  │◀──"pending"────────────│                        │                        │
-  │                        │                        │                        │
-  │  (human gives OTP      │                        │                        │
-  │   via chat)            │                        │                        │
-  │                        │                        │                        │
-  │─POST /confirm {otp}──▶│                        │                        │
+Agent                    Bastion                  You (CLI)                Plugin
+  │                        │                        │                       │
+  │─POST /request─────────▶│                        │                       │
+  │◀──{request_id}─────────│                        │                       │
+  │                        │                        │                       │
+  │  (agent tells you:     │                        │                       │
+  │  "check bastion")      │                        │                       │
+  │                        │                        │                       │
+  │                        │◀──bastion approve──────│                       │
+  │                        │──OTP────────────────────▶                      │
+  │                        │                        │                       │
+  │  (you give agent       │                        │                       │
+  │   the OTP)             │                        │                       │
+  │                        │                        │                       │
+  │─POST /confirm {otp}──▶│                        │                       │
   │                        │─POST /execute──────────────────────────────────▶│
-  │                        │◀───────────────────────────────────────result───│
-  │◀──result───────────────│                        │                        │
+  │◀──result───────────────│◀───────────────────────────────────────result──│
 ```
-
-1. Agent submits a request to Bastion
-2. Human reviews the request in Bastion's web UI (with a plain-English preview)
-3. Human approves → Bastion generates a one-time code (OTP)
-4. Human gives the OTP to the agent via normal conversation
-5. Agent confirms with the OTP → Bastion executes via plugin → returns result
-
-**The OTP is the proof that a human approved.** It's single-use, bound to that specific request, and useless without Bastion.
 
 ## Security Model
 
-The agent **cannot self-approve** because:
+- **Bastion runs as a different OS user** from the agent — the agent can't read config, DB, or passwords
+- **Admin password is bcrypt-hashed** in `bastion.json` — even if the agent reads the file (it can't), it can't reverse the hash
+- **OTPs are bcrypt-hashed** in the database, single-use, max 3 attempts, 5-minute TTL
+- **Agent API key** is separate from admin password — the agent can submit requests but can't approve them
+- **Plugin credentials** live in plugin config — the agent never sees them
 
-- Bastion runs as a **separate OS user** from the agent — the agent can't read Bastion's DB, config, or process memory
-- The web UI is **password-protected** and only accessible to the human
-- OTPs are **hashed in the database** — even if the agent could read the DB (it can't), it couldn't extract the OTP
-- OTPs are **single-use** and **bound to a specific request** — can't be reused or applied to a different action
-- Plugin credentials live in Bastion's config — the agent never sees them
-- Plugins only accept requests from Bastion, not directly from the agent
+## CLI Commands
 
-**The agent giving the OTP back to Bastion is the design, not a vulnerability.** The human chose to give it — that IS the approval.
-
-### Installation Best Practice
-
-> **Install Bastion as a separate OS user from your AI agent.** The agent should have no read access to Bastion's data directory, config, or plugin credentials. This is your security boundary.
-
-```bash
-# Example: agent runs as "friday", bastion runs as "bastion" or your user
-sudo useradd -r -s /bin/false bastion
-# Install and configure as the bastion user
-# Agent can only reach POST /request and POST /confirm endpoints
+```
+bastion pending                       List pending requests
+bastion show <id>                     Show request details + preview
+bastion approve <id>                  Approve → prints OTP
+bastion reject <id> [--reason "..."]  Reject request
+bastion audit                         View audit log
+bastion live                          Interactive mode (live feed)
+bastion hash-password <password>      Generate bcrypt hash for config
 ```
 
-## Architecture
+## Packages
 
-**Bastion Core** handles:
-- Request queuing and approval workflow
-- OTP generation and verification
-- Audit logging (every request, approval, rejection, execution)
-- Plugin discovery and routing
-- Web UI for human review and approval
-
-**Plugins** are standalone API servers that:
-- Conform to the [Plugin Interface](docs/plugin-interface.md)
-- Hold their own service credentials (never exposed to agents or core)
-- Define available actions with risk classifications and previews
-- Execute approved actions and return results
-- Are user-extensible via config (add actions without code)
-
-## Quick Start
-
-```bash
-# Install Bastion core
-npm install -g the-bastion
-
-# Install a plugin (e.g., GitHub)
-npm install -g bastion-github
-
-# Configure
-cp bastion.example.json bastion.json
-# Edit bastion.json — set password, plugin URLs
-
-# Run
-bastion serve
+```
+the-bastion/
+├── bastion-core/              # Approval server (Express + SQLite)
+├── bastion-cli/               # CLI tool for human approval
+├── plugins/
+│   └── bastion-github/        # GitHub plugin (GitHub App auth)
+├── bastion.json               # Core config (you create from example)
+└── docs/                      # Architecture, plugin interface, MVP spec
 ```
 
-## Agent Integration
-
-Any agent that can make HTTP calls can use The Bastion:
+## Building & Testing
 
 ```bash
-# Submit a request
-curl -X POST http://localhost:8100/request \
-  -H "Content-Type: application/json" \
-  -d '{"plugin":"github","action":"create_repo","params":{"name":"my-repo","private":true}}'
-
-# → {"request_id":"abc123","status":"pending"}
-
-# After human approves and gives you the OTP:
-curl -X POST http://localhost:8100/request/abc123/confirm \
-  -H "Content-Type: application/json" \
-  -d '{"otp":"A7X9K2"}'
-
-# → {"status":"approved","result":{"url":"https://github.com/..."}}
+npm run build    # compile all packages
+npm run test     # run all tests (12 tests across core + plugin)
 ```
-
-## Tech Stack
-
-- **Core:** TypeScript, Express, SQLite (better-sqlite3)
-- **Plugins:** Standalone HTTP servers (any language, TS reference implementations)
-- **Web UI:** Served by core, password-protected
 
 ## Roadmap
 
 **Now (MVP)**
 - Bastion Core with OTP approval flow
-- GitHub plugin (create_repo)
-- Web UI for review and approval
+- GitHub plugin (create_repo, list_repos)
+- CLI for review and approval
 
 **Next**
 - More GitHub actions (branch protection, collaborators, PRs, issues)
 - AWS plugin (EC2, S3, IAM operations)
-- Configurable auto-approve policies (user chooses what needs manual approval vs. auto)
-- OpenClaw plugin (native tool integration, no curl needed)
-- Notification channels (push notifications, email, chat webhooks)
+- Push notifications for pending requests
+- Configurable auto-approve policies (user chooses what needs manual approval)
+- OpenClaw plugin (native tool integration)
 
 **Later**
 - Community plugin ecosystem
-- Batch operations (approve/reject groups of related requests)
+- Web UI for approval (optional)
+- Batch operations
 - Dual approval for high-risk actions
-- Plugin marketplace / registry
-- Docker/Kubernetes plugin
-- DNS management plugin (Route53, Cloudflare)
-- Database migration plugin
 
 **Philosophy:** Bastion core stays small. New capabilities come from plugins, not core bloat.
+
+## Docs
+
+- [Architecture](docs/architecture.md) — request lifecycle, DB schema, trust boundaries
+- [Plugin Interface](docs/plugin-interface.md) — how to build plugins
+- [MVP Scope](docs/mvp.md) — what's in v1
 
 ## License
 
