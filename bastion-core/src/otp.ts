@@ -1,10 +1,11 @@
 import bcrypt from 'bcryptjs';
+import { randomInt } from 'node:crypto';
 
 const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 export function generateOtp(length = 6): string {
   let otp = '';
-  for (let i = 0; i < length; i += 1) otp += CHARS[Math.floor(Math.random() * CHARS.length)];
+  for (let i = 0; i < length; i += 1) otp += CHARS[randomInt(CHARS.length)];
   return otp;
 }
 

@@ -95,81 +95,58 @@ Simple health check.
 → 200: { "status": "ok", "name": "github", "version": "0.1.0" }
 ```
 
-## Optional Endpoints
-
-### GET /actions/{action}/preview
-
-Returns a human-readable preview of what will happen. Used in the approval UI.
-
-```
-GET /actions/create_repo/preview?name=my-repo&private=true
-
-→ 200: {
-    "summary": "Create private repository 'my-repo' under joshuaohana",
-    "details": "This will create a new private repository at https://github.com/joshuaohana/my-repo"
-  }
-```
-
 ## Building a Plugin
 
 A plugin is just an HTTP server. Here's the minimal structure:
 
 ```
 bastion-github/
-├── bastion_github/
-│   ├── __init__.py
-│   ├── server.py          # FastAPI app with the 4 required endpoints
+├── src/
+│   ├── index.ts           # Express app with the required endpoints
 │   ├── actions/           # One file per action
-│   │   ├── create_repo.py
-│   │   └── list_repos.py
-│   └── config.py          # Plugin credentials and settings
-├── plugin.toml            # Plugin metadata + user-extensible action config
-├── pyproject.toml
+│   │   ├── create-repo.ts
+│   │   └── list-repos.ts
+│   └── config.ts          # Plugin credentials and settings
+├── plugin.json            # Plugin config (creds, user-defined actions)
+├── package.json
 └── README.md
 ```
 
 ### User-Extensible Actions
 
-Users can add custom actions to any plugin without modifying plugin code. In `plugin.toml`:
+Users can add custom actions to any plugin without modifying plugin code. In `plugin.json`:
 
-```toml
-[plugin]
-name = "github"
-
-[credentials]
-app_id = 12345
-private_key_path = "/path/to/key.pem"
-installation_id = 67890
-
-# Built-in actions are defined in code.
-# Users can add more here:
-
-[actions.custom.create_branch_protection]
-description = "Set branch protection rules"
-risk = "write"
-# Maps to a GitHub API call
-method = "PUT"
-endpoint = "/repos/{owner}/{repo}/branches/{branch}/protection"
-params_schema = '''
+```json
 {
-  "type": "object",
-  "properties": {
-    "owner": { "type": "string" },
-    "repo": { "type": "string" },
-    "branch": { "type": "string", "default": "main" }
+  "credentials": {
+    "appId": 12345,
+    "privateKeyPath": "/path/to/key.pem",
+    "installationId": 67890
   },
-  "required": ["owner", "repo"]
+  "customActions": {
+    "create_branch_protection": {
+      "description": "Set branch protection rules",
+      "risk": "write",
+      "method": "PUT",
+      "endpoint": "/repos/{owner}/{repo}/branches/{branch}/protection",
+      "paramsSchema": {
+        "type": "object",
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "branch": { "type": "string", "default": "main" }
+        },
+        "required": ["owner", "repo"]
+      },
+      "bodyTemplate": {
+        "required_pull_request_reviews": {
+          "required_approving_review_count": 1
+        },
+        "enforce_admins": true
+      }
+    }
+  }
 }
-'''
-# Request body template (Jinja2)
-body_template = '''
-{
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 1
-  },
-  "enforce_admins": true
-}
-'''
 ```
 
 This way, adding a new GitHub action is just config — no code, no PR.
